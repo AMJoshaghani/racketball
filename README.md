@@ -4,6 +4,8 @@ A fast, 3D paddle-ball arcade game that runs straight in the browser. Carry
 the ball, aim your shot, and try not to get scored on. Play locally, vs AI,
 or online with a friend.
 
+![game](https://s6.imgcdn.dev/YHcq7V.png)
+
 ## Features
 
 - **Local 2-player**, **single-player vs AI** (3 difficulties), or **online
