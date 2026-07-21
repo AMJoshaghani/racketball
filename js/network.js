@@ -3,6 +3,13 @@
 // state it receives. This replaces the old "whoever currently owns the
 // ball simulates it" scheme, which was fragile and duplicated logic.
 
+const ICE_SERVERS = [
+  { urls: 'stun:stun.relay.metered.ca:80' },
+  { urls: 'turn:global.relay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
+  { urls: 'turn:global.relay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
+  { urls: 'turn:global.relay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
+];
+
 export class NetSession {
   constructor() {
     this.peer = null;
@@ -18,7 +25,7 @@ export class NetSession {
   host() {
     return new Promise((resolve, reject) => {
       this.role = 'host';
-      this.peer = new Peer();
+      this.peer = new Peer({ config: { iceServers: ICE_SERVERS } });
       this.peer.on('open', (id) => {
         this.onOpenId && this.onOpenId(id);
         resolve(id);
@@ -37,7 +44,7 @@ export class NetSession {
   join(hostId) {
     return new Promise((resolve, reject) => {
       this.role = 'guest';
-      this.peer = new Peer();
+      this.peer = new Peer({ config: { iceServers: ICE_SERVERS } });
       this.peer.on('open', () => {
         const conn = this.peer.connect(hostId, { reliable: true });
         this.conn = conn;
