@@ -1,0 +1,344 @@
+:root {
+  --neon-a: #00f0c0;
+  --neon-b: #ff3d6e;
+  --bg: #050810;
+  --panel: rgba(10, 14, 24, 0.92);
+  --panel-border: #1b2436;
+  --text: #eaf6ff;
+  --text-dim: #7d8ba3;
+  font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  overflow: hidden;
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+  overscroll-behavior: none;
+}
+
+#game-root {
+  position: fixed;
+  inset: 0;
+}
+
+#game-root canvas {
+  display: block;
+  touch-action: none;
+}
+
+#ui-root {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 10;
+}
+
+/* ---------- Generic panel ---------- */
+.panel {
+  pointer-events: auto;
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-radius: 14px;
+  padding: 32px 36px;
+  min-width: 320px;
+  max-width: 92vw;
+  box-shadow: 0 0 0 1px rgba(0,240,192,0.06), 0 20px 60px rgba(0,0,0,0.6);
+  text-align: center;
+}
+
+.panel h1 {
+  font-size: 2.1rem;
+  letter-spacing: 0.12em;
+  margin: 0 0 4px;
+  background: linear-gradient(90deg, var(--neon-a), var(--neon-b));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  text-transform: uppercase;
+}
+
+.panel h2 {
+  font-size: 1.05rem;
+  letter-spacing: 0.08em;
+  margin: 0 0 22px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  font-weight: 600;
+}
+
+.panel p.sub {
+  color: var(--text-dim);
+  margin: -14px 0 22px;
+  font-size: 0.9rem;
+}
+
+.btn-col {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.btn {
+  pointer-events: auto;
+  cursor: pointer;
+  background: #0d1420;
+  border: 1px solid var(--panel-border);
+  color: var(--text);
+  padding: 13px 18px;
+  border-radius: 9px;
+  font-size: 0.95rem;
+  letter-spacing: 0.03em;
+  font-weight: 600;
+  transition: border-color 0.15s, transform 0.1s, background 0.15s;
+}
+
+.btn:hover {
+  border-color: var(--neon-a);
+  background: #10192a;
+  transform: translateY(-1px);
+}
+
+.btn:active { transform: translateY(0); }
+
+.btn.primary {
+  border-color: var(--neon-a);
+  background: linear-gradient(180deg, rgba(0,240,192,0.14), rgba(0,240,192,0.03));
+}
+
+.btn.ghost {
+  background: transparent;
+  color: var(--text-dim);
+  border-color: transparent;
+}
+
+.btn.ghost:hover { color: var(--text); }
+
+.row { display: flex; gap: 10px; }
+.row .btn { flex: 1; }
+
+input[type="text"] {
+  pointer-events: auto;
+  width: 100%;
+  padding: 12px 14px;
+  border-radius: 9px;
+  border: 1px solid var(--panel-border);
+  background: #0a0f1a;
+  color: var(--text);
+  font-size: 1rem;
+  margin-bottom: 12px;
+  outline: none;
+  text-align: center;
+  -webkit-user-select: text;
+  user-select: text;
+  touch-action: manipulation;
+}
+
+input[type="text"]:focus { border-color: var(--neon-a); }
+
+.id-display {
+  pointer-events: auto;
+  user-select: all;
+  background: #0a0f1a;
+  border: 1px dashed var(--panel-border);
+  border-radius: 9px;
+  padding: 12px;
+  font-family: monospace;
+  font-size: 1.1rem;
+  letter-spacing: 0.05em;
+  color: var(--neon-a);
+  margin-bottom: 14px;
+  word-break: break-all;
+}
+
+.status-line {
+  color: var(--text-dim);
+  font-size: 0.85rem;
+  margin-top: 14px;
+  min-height: 1.2em;
+}
+
+.hidden { display: none !important; }
+
+/* ---------- HUD ---------- */
+#hud {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 26px;
+  padding: 16px 0;
+  font-family: monospace;
+}
+
+#hud .score {
+  font-size: 2.4rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  padding: 4px 20px;
+  border-radius: 8px;
+  background: rgba(5,8,16,0.55);
+}
+
+#hud .score.me { color: var(--neon-a); text-shadow: 0 0 16px rgba(0,240,192,0.5); }
+#hud .score.opp { color: var(--neon-b); text-shadow: 0 0 16px rgba(255,61,110,0.5); }
+#hud .dash { color: var(--text-dim); font-size: 1.6rem; }
+
+#hint {
+  position: absolute;
+  bottom: 18px;
+  left: 0;
+  right: 0;
+  text-align: center;
+  color: var(--text-dim);
+  font-size: 0.8rem;
+  letter-spacing: 0.03em;
+}
+
+#countdown {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  font-size: 6rem;
+  font-weight: 800;
+  color: var(--neon-a);
+  text-shadow: 0 0 40px rgba(0,240,192,0.6);
+  font-family: monospace;
+}
+
+#flash {
+  position: absolute;
+  inset: 0;
+  background: white;
+  opacity: 0;
+}
+
+#goal-banner {
+  position: absolute;
+  top: 30%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  font-size: 3rem;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  color: var(--neon-b);
+  text-shadow: 0 0 30px rgba(255,61,110,0.6);
+  opacity: 0;
+}
+
+/* ---------- Touch controls (Android/iOS/tablets) ---------- */
+.touch-controls {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.touch-controls.hidden { display: none; }
+
+.touch-pad {
+  position: absolute;
+  bottom: max(22px, env(safe-area-inset-bottom));
+  display: flex;
+  align-items: flex-end;
+  gap: 16px;
+}
+
+.touch-pad-right {
+  right: max(18px, env(safe-area-inset-right));
+}
+
+.touch-pad-left {
+  left: max(18px, env(safe-area-inset-left));
+}
+
+.touch-move {
+  display: flex;
+  gap: 12px;
+}
+
+.touch-btn {
+  pointer-events: auto;
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+  width: 62px;
+  height: 62px;
+  border-radius: 50%;
+  background: rgba(10, 20, 32, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  color: var(--text);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.3rem;
+  font-weight: 700;
+  backdrop-filter: blur(2px);
+}
+
+.touch-btn.active {
+  background: rgba(0, 240, 192, 0.3);
+  border-color: var(--neon-a);
+}
+
+.touch-shoot {
+  width: 78px;
+  height: 78px;
+  font-size: 0.75rem;
+  letter-spacing: 0.04em;
+  background: rgba(255, 61, 110, 0.16);
+  border-color: rgba(255, 61, 110, 0.4);
+}
+
+.touch-shoot.active {
+  background: rgba(255, 61, 110, 0.42);
+  border-color: var(--neon-b);
+}
+
+/* Devices with a real mouse/hover never need on-screen buttons, even if
+   this JS ever builds them (e.g. a touchscreen laptop with a mouse too). */
+@media (hover: hover) and (pointer: fine) {
+  .touch-controls { display: none !important; }
+}
+
+/* ---------- Small-screen / phone responsiveness ---------- */
+@media (max-width: 700px) {
+  .panel {
+    padding: 22px 20px;
+    min-width: 0;
+    width: min(360px, 92vw);
+  }
+
+  .panel h1 { font-size: 1.5rem; }
+  .panel h2 { font-size: 0.85rem; margin-bottom: 16px; }
+
+  #hud .score { font-size: 1.6rem; padding: 3px 14px; }
+  #hint { font-size: 0.7rem; padding: 0 10px; }
+  #countdown { font-size: 4rem; }
+  #goal-banner { font-size: 2rem; }
+
+  .touch-btn { width: 54px; height: 54px; font-size: 1.1rem; }
+  .touch-shoot { width: 68px; height: 68px; font-size: 0.68rem; }
+}
+
+/* Landscape phones specifically: HUD/hint sit close to notches/rounded
+   corners, so nudge them in from the very edge. */
+@media (max-width: 900px) and (orientation: landscape) {
+  #hud { padding: 8px max(16px, env(safe-area-inset-left)); }
+  #hint { bottom: max(8px, env(safe-area-inset-bottom)); }
+}
