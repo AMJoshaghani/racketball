@@ -37,16 +37,3 @@ Touch controls appear automatically on phones/tablets.
 
 [Three.js](https://threejs.org) for rendering, [PeerJS](https://peerjs.com)
 for P2P networking, vanilla JS (ES modules) for everything else.
-
-## Cross-network play
-
-Online matches use STUN + TURN (see `js/network.js`) so two players on
-different networks can actually connect — STUN alone lets peers behind
-compatible NATs punch through directly, but many networks (mobile data,
-some routers) can't do that at all and need a TURN relay as fallback.
-Currently using Open Relay Project's free public TURN credentials, which
-is fine for casual play but rate-limited and not guaranteed uptime. If
-online matches start failing to connect, that's the first thing to check —
-swap in your own TURN server (a free-tier account at
-[Metered.ca](https://www.metered.ca/tools/openrelay/), Twilio, or a
-self-hosted [coturn](https://github.com/coturn/coturn) instance).
