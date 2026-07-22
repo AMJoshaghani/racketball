@@ -5,18 +5,11 @@
 
 // STUN alone is enough when at least one side's NAT allows direct
 // hole-punching (e.g. same Wi-Fi, or a simple/cone NAT). Once both peers
-// are on separate networks - different Wi-Fi, mobile data, many home
-// routers - direct P2P often isn't possible at all, no matter how long you
-// wait, because of symmetric NAT / carrier-grade NAT. A TURN server is a
-// relay both sides can always reach, used as the fallback when direct
-// connection fails. Without one, cross-network connections fail
-// unpredictably.
-//
-// Metered.ca issues short-lived TURN credentials from this endpoint rather
-// than a fixed username/password - a static pair would eventually get
-// rotated or rate-limited server-side (which is what caused earlier 401
-// "short term auth failed" errors), so credentials are fetched fresh each
-// time a connection is made instead of hardcoded here.
+// are on separate networks, direct P2P often isn't possible at all.
+// A TURN server is a relay both sides can always reach, used as the
+//  fallback when direct connection fails. Without one, cross-network
+// connections fail unpredictably.
+
 const METERED_CREDENTIALS_URL =
   'https://racketball.metered.live/api/v1/turn/credentials?apiKey=81d80827cc38d4da5351fb9f1685d8e5a897';
 

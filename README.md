@@ -37,27 +37,3 @@ Touch controls appear automatically on phones/tablets.
 
 [Three.js](https://threejs.org) for rendering, [PeerJS](https://peerjs.com)
 for P2P networking, vanilla JS (ES modules) for everything else.
-
-## Cross-network play
-
-Online matches use STUN + TURN (see `js/network.js`) so two players on
-different networks can actually connect — STUN alone lets peers behind
-compatible NATs punch through directly, but many networks (mobile data,
-some routers) can't do that at all and need a TURN relay as fallback.
-
-TURN credentials are fetched fresh from Metered.ca's API each time a
-connection is made, rather than hardcoded, since a static username/password
-eventually gets rotated or rate-limited server-side. If online matches
-start failing to connect, check `METERED_CREDENTIALS_URL` in
-`js/network.js` first — the API key embedded there may need rotating from
-your [Metered.ca](https://www.metered.ca) dashboard. That key is visible to
-anyone who views the page source, which is inherent to fetching credentials
-client-side; keep an eye on usage from the dashboard.
-
-Network traffic is deliberately throttled to control bandwidth (and TURN
-relay quota, which is metered): the host broadcasts match state at 20Hz
-(not every render frame) using a compact array payload instead of a nested
-JSON object, and the guest sends input at 30Hz. This cuts total relayed
-bytes substantially compared to sending full-frame-rate state, though
-WebRTC/TURN protocol overhead (DTLS/SRTP framing, keepalives) means actual
-usage won't shrink by the same ratio as the JSON payload size does.
