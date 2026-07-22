@@ -42,6 +42,16 @@ class App {
     this.remote = null;
     this.remotePrev = null;
 
+    // Simulation and rendering stay at full frame rate; only the network
+    // *send* rate is throttled, since a paddle game doesn't need 60
+    // updates/sec to feel responsive, and every message costs real
+    // bandwidth (and, over a TURN relay, real quota).
+    this._stateSendAccum = 0;
+    this._inputSendAccum = 0;
+    this._pendingShoot = false;
+    this.STATE_SEND_INTERVAL = 1 / 20; // host -> guest state, 20Hz
+    this.INPUT_SEND_INTERVAL = 1 / 30; // guest -> host input, 30Hz
+
     this._loop = this._loop.bind(this);
     this._showMainMenu();
     requestAnimationFrame(this._loop);
@@ -146,6 +156,9 @@ class App {
   _beginCountdown() {
     this.state = 'countdown';
     this.countdownT = 3.0;
+    this._stateSendAccum = 0;
+    this._inputSendAccum = 0;
+    this._pendingShoot = false;
     this.ui.clearPanel();
     this.ui.showHUD();
     this.ui.updateScore(0, 0);
@@ -242,10 +255,24 @@ class App {
       const p2In = this._remoteInput || { dir: 0, shoot: false };
       const events = this.match.step(dt, p1In, p2In);
       this._handleEvents(events);
-      this.net && this.net.send({ t: 'state', s: this.match.serialize() });
+      this._stateSendAccum += dt;
+      if (this.net && this._stateSendAccum >= this.STATE_SEND_INTERVAL) {
+        this._stateSendAccum = 0;
+        this.net.send({ t: 'state', s: this.match.serialize() });
+      }
     } else if (this.mode === 'guest') {
-      const selfIn = this._localInput();
-      this.net && this.net.send({ t: 'input', dir: selfIn.dir, shoot: selfIn.shoot });
+      // consumeJustPressed clears the edge-triggered flag as soon as it's
+      // read, so if we only read it on send frames (throttled below) a
+      // press on a skipped frame would be lost. Accumulate it every
+      // frame regardless, and only clear once actually sent.
+      if (this.keyboard.consumeJustPressed(CONTROLS.p1.shoot)) this._pendingShoot = true;
+      this._inputSendAccum += dt;
+      if (this.net && this._inputSendAccum >= this.INPUT_SEND_INTERVAL) {
+        this._inputSendAccum = 0;
+        const dir = readAxis(this.keyboard, CONTROLS.p1);
+        this.net.send({ t: 'input', dir, shoot: this._pendingShoot });
+        this._pendingShoot = false;
+      }
       this._applyRemoteDiff();
     }
   }
@@ -271,18 +298,21 @@ class App {
     const cur = this.remote;
     this.match.applySnapshot(cur);
 
+    // Snapshot indices: [p1x, p2x, ballx, ballz, carriedByCode, scoreP1, scoreP2, overFlag, winnerCode]
     if (prev) {
-      if (prev.ball.carriedBy && !cur.ball.carriedBy) SFX.shoot();
-      if (!prev.ball.carriedBy && cur.ball.carriedBy) { SFX.hit(); this.shake = 0.15; }
-      if (cur.score.p1 !== prev.score.p1 || cur.score.p2 !== prev.score.p2) {
+      const prevCarried = prev[4];
+      const curCarried = cur[4];
+      if (prevCarried && !curCarried) SFX.shoot();
+      if (!prevCarried && curCarried) { SFX.hit(); this.shake = 0.15; }
+      if (cur[5] !== prev[5] || cur[6] !== prev[6]) {
         SFX.goal();
         this.ui.flashScreen();
         this.shake = 0.3;
-        const p1Scored = cur.score.p1 > prev.score.p1;
+        const p1Scored = cur[5] > prev[5];
         const scorerIsMe = this.mirror ? !p1Scored : p1Scored;
         this.ui.flashGoal(scorerIsMe ? 'YOU SCORE!' : 'OPPONENT SCORES');
       }
-      if (cur.over && !prev.over) this._endMatch();
+      if (cur[7] && !prev[7]) this._endMatch();
     }
     const { me, opp } = this._selfOppScore();
     this.ui.updateScore(me, opp);

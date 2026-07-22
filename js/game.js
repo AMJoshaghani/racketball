@@ -122,21 +122,38 @@ export class Match {
     return events;
   }
 
-  /** Snapshot for network sync (host -> guest). */
+  /**
+   * Snapshot for network sync (host -> guest), kept as a compact array
+   * instead of a nested object so repeated key names don't get sent on
+   * every message - this runs many times a second, so payload size adds
+   * up fast over a metered TURN relay.
+   * [p1x, p2x, ballx, ballz, carriedByCode, scoreP1, scoreP2, overFlag, winnerCode]
+   */
   serialize() {
-    return {
-      p1: { x: this.p1.x }, p2: { x: this.p2.x },
-      ball: { x: this.ball.x, z: this.ball.z, carriedBy: this.ball.carriedBy },
-      score: { ...this.score },
-      over: this.over,
-      winner: this.winner,
-    };
+    return [
+      Math.round(this.p1.x),
+      Math.round(this.p2.x),
+      Math.round(this.ball.x),
+      Math.round(this.ball.z),
+      encodeSide(this.ball.carriedBy),
+      this.score.p1,
+      this.score.p2,
+      this.over ? 1 : 0,
+      encodeSide(this.winner),
+    ];
   }
 
   applySnapshot(s) {
-    this.p1.x = s.p1.x; this.p2.x = s.p2.x;
-    this.ball.x = s.ball.x; this.ball.z = s.ball.z; this.ball.carriedBy = s.ball.carriedBy;
-    this.score = s.score;
-    this.over = s.over; this.winner = s.winner;
+    this.p1.x = s[0]; this.p2.x = s[1];
+    this.ball.x = s[2]; this.ball.z = s[3]; this.ball.carriedBy = decodeSide(s[4]);
+    this.score = { p1: s[5], p2: s[6] };
+    this.over = !!s[7]; this.winner = decodeSide(s[8]);
   }
+}
+
+function encodeSide(side) {
+  return side === 'p1' ? 1 : side === 'p2' ? 2 : 0;
+}
+function decodeSide(code) {
+  return code === 1 ? 'p1' : code === 2 ? 'p2' : null;
 }
