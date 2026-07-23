@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { buildScene, buildRenderer, buildCamera, fitCameraFov, ARENA } from './scene.js';
 import { Paddle, Ball } from './entities.js';
-import { Match } from './game.js';
+import { Match, decodeSide } from './game.js';
 import { Keyboard, CONTROLS, readAxis } from './input.js';
 import { AIController } from './ai.js';
 import { NetSession } from './network.js';
@@ -38,9 +38,21 @@ class App {
     this.countdownT = 0;
     this.shake = 0;
 
-    // Guest-only: latest + previous snapshot from host, for diffing events.
+    // Guest-only: latest snapshot from host, used to diff against the
+    // next incoming packet for one-shot events (goal/hit/shoot SFX).
     this.remote = null;
-    this.remotePrev = null;
+    // Guest-only: continuous-position interpolation targets. State only
+    // arrives ~20 times/sec over the network, so snapping straight to each
+    // new position produces a visible stutter every ~50ms - especially
+    // noticeable on a relayed (TURN) connection where arrival timing is
+    // less even. Instead we keep the last known network position as a
+    // target and smoothly ease the rendered position toward it every
+    // frame, so motion looks continuous between updates.
+    this._netTargetP1x = 0;
+    this._netTargetP2x = 0;
+    this._netTargetBallX = 0;
+    this._netTargetBallZ = 0;
+    this._netInterpRate = 14; // higher = snappier but less smooth
 
     // Simulation and rendering stay at full frame rate; only the network
     // *send* rate is throttled, since a paddle game doesn't need 60
@@ -114,6 +126,7 @@ class App {
     this.net = new NetSession();
     this._bindNetworkData();
     this.touch.build([{ scheme: CONTROLS.p1, side: 'right' }]);
+    this.ui.setHint('A / D to move · Space to shoot');
     this.ui.showHostScreen({});
     this.ui.bindBack(() => this._showMainMenu());
     this.net.onOpenId = (id) => this.ui.setHostId(id);
@@ -133,6 +146,7 @@ class App {
     this.net = new NetSession();
     this._bindNetworkData();
     this.touch.build([{ scheme: CONTROLS.p1, side: 'right' }]);
+    this.ui.setHint('A / D to move · Space to shoot');
     this.ui.showJoinScreen({
       onBack: () => this._showMainMenu(),
       onSubmit: (code) => {
@@ -213,7 +227,6 @@ class App {
     if (this.mode === 'ai') this.ai = new AIController(this.aiDifficulty);
     if (!fromPeer && this.net) this.net.send({ t: 'rematch' });
     this.remote = null;
-    this.remotePrev = null;
     this._beginCountdown();
   }
 
@@ -273,7 +286,7 @@ class App {
         this.net.send({ t: 'input', dir, shoot: this._pendingShoot });
         this._pendingShoot = false;
       }
-      this._applyRemoteDiff();
+      this._stepInterpolation(dt);
     }
   }
 
@@ -281,8 +294,9 @@ class App {
     if (!this.net) return;
     this.net.onData = (data) => {
       if (data.t === 'state' && this.mode === 'guest') {
-        this.remotePrev = this.remote;
+        const prev = this.remote;
         this.remote = data.s;
+        this._handleRemoteState(prev, data.s);
       } else if (data.t === 'input' && this.mode === 'host') {
         this._remoteInput = { dir: data.dir, shoot: data.shoot };
       } else if (data.t === 'rematch') {
@@ -292,13 +306,23 @@ class App {
     };
   }
 
-  _applyRemoteDiff() {
-    if (!this.remote) return;
-    const prev = this.remotePrev;
-    const cur = this.remote;
-    this.match.applySnapshot(cur);
-
+  /** Called exactly once per incoming network state packet (not once per
+   * render frame) - applies discrete fields immediately and fires
+   * one-shot events (goal, hit, shoot) by comparing to the previous
+   * packet. Continuous fields are stored as interpolation targets; see
+   * _stepInterpolation for how those get eased toward each frame. */
+  _handleRemoteState(prev, cur) {
     // Snapshot indices: [p1x, p2x, ballx, ballz, carriedByCode, scoreP1, scoreP2, overFlag, winnerCode]
+    this.match.ball.carriedBy = decodeSide(cur[4]);
+    this.match.score = { p1: cur[5], p2: cur[6] };
+    this.match.over = !!cur[7];
+    this.match.winner = decodeSide(cur[8]);
+
+    this._netTargetP1x = cur[0];
+    this._netTargetP2x = cur[1];
+    this._netTargetBallX = cur[2];
+    this._netTargetBallZ = cur[3];
+
     if (prev) {
       const prevCarried = prev[4];
       const curCarried = cur[4];
@@ -316,6 +340,17 @@ class App {
     }
     const { me, opp } = this._selfOppScore();
     this.ui.updateScore(me, opp);
+  }
+
+  /** Eases the guest's rendered paddle/ball positions toward the latest
+   * network targets every frame, so motion looks smooth between the
+   * ~20Hz state updates instead of visibly snapping on each arrival. */
+  _stepInterpolation(dt) {
+    const t = 1 - Math.exp(-this._netInterpRate * dt);
+    this.match.p1.x += (this._netTargetP1x - this.match.p1.x) * t;
+    this.match.p2.x += (this._netTargetP2x - this.match.p2.x) * t;
+    this.match.ball.x += (this._netTargetBallX - this.match.ball.x) * t;
+    this.match.ball.z += (this._netTargetBallZ - this.match.ball.z) * t;
   }
 
   _render(dt = 0.016) {

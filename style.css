@@ -210,6 +210,12 @@ input[type="text"]:focus { border-color: var(--neon-a); }
   letter-spacing: 0.03em;
 }
 
+/* Keyboard hint text is meaningless on a touch device (no keyboard) -
+   the on-screen touch pad already communicates the controls there. */
+@media not all and (hover: hover) and (pointer: fine) {
+  #hint { display: none; }
+}
+
 #countdown {
   position: absolute;
   top: 50%;

@@ -151,9 +151,9 @@ export class Match {
   }
 }
 
-function encodeSide(side) {
+export function encodeSide(side) {
   return side === 'p1' ? 1 : side === 'p2' ? 2 : 0;
 }
-function decodeSide(code) {
+export function decodeSide(code) {
   return code === 1 ? 'p1' : code === 2 ? 'p2' : null;
 }

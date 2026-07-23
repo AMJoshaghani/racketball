@@ -1,14 +1,10 @@
 // Thin wrapper around PeerJS. The host runs the authoritative simulation
 // and broadcasts state; the guest just sends input and renders whatever
-// state it receives. This replaces the old "whoever currently owns the
-// ball simulates it" scheme, which was fragile and duplicated logic.
-
-// STUN alone is enough when at least one side's NAT allows direct
-// hole-punching (e.g. same Wi-Fi, or a simple/cone NAT). Once both peers
-// are on separate networks, direct P2P often isn't possible at all.
-// A TURN server is a relay both sides can always reach, used as the
-//  fallback when direct connection fails. Without one, cross-network
-// connections fail unpredictably.
+// state it receives. STUN alone is enough when at least one side's NAT
+//  allows direct hole-punching (e.g. same Wi-Fi, or a simple/cone NAT).
+// Once both peers are on separate networks direct P2P often isn't possible.
+// A TURN server is a relay both sides can always reach, used as the fallback
+// when direct connection fails.
 
 const METERED_CREDENTIALS_URL =
   'https://racketball.metered.live/api/v1/turn/credentials?apiKey=81d80827cc38d4da5351fb9f1685d8e5a897';
