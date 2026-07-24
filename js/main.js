@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { buildScene, buildRenderer, buildCamera, fitCameraFov, ARENA } from './scene.js';
 import { Paddle, Ball } from './entities.js';
-import { Match, decodeSide } from './game.js';
+import { Match, decodeSide, stepPaddlePhysics } from './game.js';
 import { Keyboard, CONTROLS, readAxis } from './input.js';
 import { AIController } from './ai.js';
 import { NetSession } from './network.js';
@@ -41,28 +41,43 @@ class App {
     // Guest-only: latest snapshot from host, used to diff against the
     // next incoming packet for one-shot events (goal/hit/shoot SFX).
     this.remote = null;
-    // Guest-only: continuous-position interpolation targets. State only
-    // arrives ~20 times/sec over the network, so snapping straight to each
-    // new position produces a visible stutter every ~50ms - especially
-    // noticeable on a relayed (TURN) connection where arrival timing is
-    // less even. Instead we keep the last known network position as a
-    // target and smoothly ease the rendered position toward it every
-    // frame, so motion looks continuous between updates.
+    // Guest-only: continuous-position interpolation targets, for the
+    // OPPONENT's paddle and the ball only (not the guest's own paddle,
+    // see _predictedSelf below). State only arrives a limited number of
+    // times/sec over the network, so snapping straight to each new
+    // position produces a visible stutter, especially noticeable on a
+    // relayed (TURN) connection where arrival timing is less even.
+    // Instead we keep the last known network position as a target and
+    // smoothly ease the rendered position toward it every frame.
     this._netTargetP1x = 0;
     this._netTargetP2x = 0;
     this._netTargetBallX = 0;
     this._netTargetBallZ = 0;
     this._netInterpRate = 14; // higher = snappier but less smooth
 
+    // Guest-only: client-side prediction for the guest's OWN paddle.
+    // Without this, every keypress has to travel guest -> host -> guest
+    // (a full round trip over the relay) before any movement is visible,
+    // which reads as input lag no amount of visual smoothing can hide.
+    // Instead the guest runs the exact same paddle physics locally, the
+    // instant a key is pressed, and only gently reconciles toward the
+    // host's confirmed position afterward to correct for drift. see
+    // _stepInterpolation.
+    this._predictedSelf = { x: 0, vx: 0 };
+    this._reconcileRate = 6; // per second - gentle pull toward host truth
+
     // Simulation and rendering stay at full frame rate; only the network
     // *send* rate is throttled, since a paddle game doesn't need 60
     // updates/sec to feel responsive, and every message costs real
-    // bandwidth (and, over a TURN relay, real quota).
+    // bandwidth (and, over a TURN relay, real quota). Client-side
+    // prediction (above) means the guest's own responsiveness no longer
+    // depends on this rate at all, so it can run lower than before
+    // without feeling worse - which also means less relay traffic.
     this._stateSendAccum = 0;
     this._inputSendAccum = 0;
     this._pendingShoot = false;
-    this.STATE_SEND_INTERVAL = 1 / 20; // host -> guest state, 20Hz
-    this.INPUT_SEND_INTERVAL = 1 / 30; // guest -> host input, 30Hz
+    this.STATE_SEND_INTERVAL = 1 / 15; // host -> guest state, 15Hz
+    this.INPUT_SEND_INTERVAL = 1 / 20; // guest -> host input, 20Hz
 
     this._loop = this._loop.bind(this);
     this._showMainMenu();
@@ -173,6 +188,11 @@ class App {
     this._stateSendAccum = 0;
     this._inputSendAccum = 0;
     this._pendingShoot = false;
+    this._predictedSelf = { x: 0, vx: 0 };
+    this._netTargetP1x = 0;
+    this._netTargetP2x = 0;
+    this._netTargetBallX = 0;
+    this._netTargetBallZ = 0;
     this.ui.clearPanel();
     this.ui.showHUD();
     this.ui.updateScore(0, 0);
@@ -274,18 +294,34 @@ class App {
         this.net.send({ t: 'state', s: this.match.serialize() });
       }
     } else if (this.mode === 'guest') {
+      // Direction is read every frame (not just on throttled send frames)
+      // so client-side prediction below stays perfectly responsive
+      // regardless of how often we actually transmit it over the network.
+      const dir = readAxis(this.keyboard, CONTROLS.p1);
+
       // consumeJustPressed clears the edge-triggered flag as soon as it's
       // read, so if we only read it on send frames (throttled below) a
       // press on a skipped frame would be lost. Accumulate it every
       // frame regardless, and only clear once actually sent.
       if (this.keyboard.consumeJustPressed(CONTROLS.p1.shoot)) this._pendingShoot = true;
+
       this._inputSendAccum += dt;
       if (this.net && this._inputSendAccum >= this.INPUT_SEND_INTERVAL) {
         this._inputSendAccum = 0;
-        const dir = readAxis(this.keyboard, CONTROLS.p1);
         this.net.send({ t: 'input', dir, shoot: this._pendingShoot });
         this._pendingShoot = false;
       }
+
+      // Client-side prediction: move the guest's own paddle immediately
+      // using the same physics the host runs, instead of waiting for a
+      // round trip. Then gently reconcile toward the host's confirmed
+      // position so any small drift (network jitter, rounding) never
+      // accumulates into a lasting offset.
+      stepPaddlePhysics(this._predictedSelf, dir, dt);
+      const reconcileT = 1 - Math.exp(-this._reconcileRate * dt);
+      this._predictedSelf.x += (this._netTargetP2x - this._predictedSelf.x) * reconcileT;
+      this.match.p2.x = this._predictedSelf.x;
+
       this._stepInterpolation(dt);
     }
   }
@@ -342,13 +378,14 @@ class App {
     this.ui.updateScore(me, opp);
   }
 
-  /** Eases the guest's rendered paddle/ball positions toward the latest
-   * network targets every frame, so motion looks smooth between the
-   * ~20Hz state updates instead of visibly snapping on each arrival. */
+  /** Eases the OPPONENT's paddle and the ball toward the latest network
+   * targets every frame, so motion looks smooth between state updates
+   * instead of visibly snapping on each arrival. The guest's own paddle
+   * is handled separately via client-side prediction (see the guest
+   * branch of _step), not interpolated here. */
   _stepInterpolation(dt) {
     const t = 1 - Math.exp(-this._netInterpRate * dt);
     this.match.p1.x += (this._netTargetP1x - this.match.p1.x) * t;
-    this.match.p2.x += (this._netTargetP2x - this.match.p2.x) * t;
     this.match.ball.x += (this._netTargetBallX - this.match.ball.x) * t;
     this.match.ball.z += (this._netTargetBallZ - this.match.ball.z) * t;
   }

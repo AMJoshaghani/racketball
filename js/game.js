@@ -8,6 +8,26 @@ export const AIM_FACTOR = 1.35;
 export const MAX_AIM_VX = 480;
 export const WIN_SCORE = 7;
 export const GOAL_MARGIN = 40;
+export const PADDLE_SPEED = 620;
+export const PADDLE_ACCEL = 4200;
+
+/**
+ * Advances one paddle's velocity/position by dt seconds given a -1..1
+ * direction input. Exported (not just used internally by Match) so the
+ * guest can run this exact same physics locally for client-side
+ * prediction of its own paddle - if prediction used different constants
+ * than the host's authoritative simulation, reconciliation would produce
+ * visible rubber-banding as the two drift apart and get corrected.
+ */
+export function stepPaddlePhysics(p, dir, dt) {
+  const desired = dir * PADDLE_SPEED;
+  const diff = desired - p.vx;
+  const maxDelta = PADDLE_ACCEL * dt;
+  p.vx += Math.max(-maxDelta, Math.min(maxDelta, diff));
+  p.x += p.vx * dt;
+  const limit = ARENA.halfWidth - PADDLE_SIZE.w / 2;
+  p.x = Math.max(-limit, Math.min(limit, p.x));
+}
 
 /**
  * Pure simulation of one match: two paddles + one ball.
@@ -28,15 +48,7 @@ export class Match {
   }
 
   _stepPaddle(p, dir, dt) {
-    const speed = 620;
-    const accel = 4200;
-    const desired = dir * speed;
-    const diff = desired - p.vx;
-    const maxDelta = accel * dt;
-    p.vx += Math.max(-maxDelta, Math.min(maxDelta, diff));
-    p.x += p.vx * dt;
-    const limit = ARENA.halfWidth - PADDLE_SIZE.w / 2;
-    p.x = Math.max(-limit, Math.min(limit, p.x));
+    stepPaddlePhysics(p, dir, dt);
   }
 
   _serve(toWhom) {
