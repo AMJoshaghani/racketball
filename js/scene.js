@@ -95,10 +95,21 @@ export function buildScene() {
   return scene;
 }
 
+// Shadow maps, antialiasing, and a high pixel ratio are the classic
+// budget-killers for weaker mobile GPUs - pixel ratio in particular scales
+// render cost quadratically (2x ratio = 4x the pixels to shade). Using the
+// same touch-device heuristic as the CSS media queries elsewhere, quality
+// is scaled down there so actual frame rate stays acceptable instead of
+// silently degrading into a choppy, low-FPS render on weaker hardware.
+function isTouchDevice() {
+  return !window.matchMedia('(hover: hover) and (pointer: fine)').matches;
+}
+
 export function buildRenderer(container) {
-  const renderer = new THREE.WebGLRenderer({ antialias: true });
-  renderer.shadowMap.enabled = true;
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  const lowPower = isTouchDevice();
+  const renderer = new THREE.WebGLRenderer({ antialias: !lowPower });
+  renderer.shadowMap.enabled = !lowPower;
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, lowPower ? 1.5 : 2));
   renderer.setSize(window.innerWidth, window.innerHeight);
   container.appendChild(renderer.domElement);
   return renderer;

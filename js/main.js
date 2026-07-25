@@ -42,10 +42,10 @@ class App {
     // next incoming packet for one-shot events (goal/hit/shoot SFX).
     this.remote = null;
     // Guest-only: continuous-position interpolation targets, for the
-    // OPPONENT's paddle and the ball only (not the guest's own paddle,
+    // OPPONENT's paddle and the ball only (not the guest's own paddle -
     // see _predictedSelf below). State only arrives a limited number of
     // times/sec over the network, so snapping straight to each new
-    // position produces a visible stutter, especially noticeable on a
+    // position produces a visible stutter - especially noticeable on a
     // relayed (TURN) connection where arrival timing is less even.
     // Instead we keep the last known network position as a target and
     // smoothly ease the rendered position toward it every frame.
@@ -53,7 +53,8 @@ class App {
     this._netTargetP2x = 0;
     this._netTargetBallX = 0;
     this._netTargetBallZ = 0;
-    this._netInterpRate = 14; // higher = snappier but less smooth
+    this._paddleInterpRate = 14; // opponent paddle - moves up to 620 units/sec
+    this._ballInterpRate = 24;   // ball - moves up to 1600 units/sec, needs to catch up faster
 
     // Guest-only: client-side prediction for the guest's OWN paddle.
     // Without this, every keypress has to travel guest -> host -> guest
@@ -61,10 +62,14 @@ class App {
     // which reads as input lag no amount of visual smoothing can hide.
     // Instead the guest runs the exact same paddle physics locally, the
     // instant a key is pressed, and only gently reconciles toward the
-    // host's confirmed position afterward to correct for drift. see
+    // host's confirmed position afterward to correct for drift - see
     // _stepInterpolation.
     this._predictedSelf = { x: 0, vx: 0 };
-    this._reconcileRate = 6; // per second - gentle pull toward host truth
+    this._idleTime = 0; // how long the paddle has had zero input, for reconciliation gating
+    this.IDLE_RECONCILE_DELAY = 0.22; // seconds of idle before trusting host's confirmed position
+    this.IDLE_RECONCILE_RATE = 8;     // correction speed once idle-gated reconciliation kicks in
+    this.HARD_ERROR_THRESHOLD = 140;  // units of divergence that imply a real desync, not just lag
+    this.HARD_ERROR_RATE = 10;        // correction speed for the large-divergence safety net
 
     // Simulation and rendering stay at full frame rate; only the network
     // *send* rate is throttled, since a paddle game doesn't need 60
@@ -189,6 +194,7 @@ class App {
     this._inputSendAccum = 0;
     this._pendingShoot = false;
     this._predictedSelf = { x: 0, vx: 0 };
+    this._idleTime = 0;
     this._netTargetP1x = 0;
     this._netTargetP2x = 0;
     this._netTargetBallX = 0;
@@ -314,12 +320,31 @@ class App {
 
       // Client-side prediction: move the guest's own paddle immediately
       // using the same physics the host runs, instead of waiting for a
-      // round trip. Then gently reconcile toward the host's confirmed
-      // position so any small drift (network jitter, rounding) never
-      // accumulates into a lasting offset.
+      // round trip.
       stepPaddlePhysics(this._predictedSelf, dir, dt);
-      const reconcileT = 1 - Math.exp(-this._reconcileRate * dt);
-      this._predictedSelf.x += (this._netTargetP2x - this._predictedSelf.x) * reconcileT;
+
+      // Reconciliation toward the host's confirmed position. While
+      // actively moving, the host's confirmation always legitimately
+      // lags the local prediction by about one round trip - that's
+      // expected latency, not drift, so continuously blending toward it
+      // would just fight the prediction and re-introduce the exact lag
+      // it's meant to hide (visible as "delayed start / delayed stop").
+      // Correction only runs once the paddle has been idle long enough
+      // for the host's confirmation to have caught up, or immediately if
+      // the divergence is large enough to indicate a real desync (e.g.
+      // dropped packets) rather than expected phase lag.
+      this._idleTime = dir === 0 ? this._idleTime + dt : 0;
+      const error = Math.abs(this._netTargetP2x - this._predictedSelf.x);
+      let reconcileRate = 0;
+      if (error > this.HARD_ERROR_THRESHOLD) {
+        reconcileRate = this.HARD_ERROR_RATE;
+      } else if (this._idleTime > this.IDLE_RECONCILE_DELAY) {
+        reconcileRate = this.IDLE_RECONCILE_RATE;
+      }
+      if (reconcileRate > 0) {
+        const t = 1 - Math.exp(-reconcileRate * dt);
+        this._predictedSelf.x += (this._netTargetP2x - this._predictedSelf.x) * t;
+      }
       this.match.p2.x = this._predictedSelf.x;
 
       this._stepInterpolation(dt);
@@ -384,10 +409,11 @@ class App {
    * is handled separately via client-side prediction (see the guest
    * branch of _step), not interpolated here. */
   _stepInterpolation(dt) {
-    const t = 1 - Math.exp(-this._netInterpRate * dt);
-    this.match.p1.x += (this._netTargetP1x - this.match.p1.x) * t;
-    this.match.ball.x += (this._netTargetBallX - this.match.ball.x) * t;
-    this.match.ball.z += (this._netTargetBallZ - this.match.ball.z) * t;
+    const tPaddle = 1 - Math.exp(-this._paddleInterpRate * dt);
+    const tBall = 1 - Math.exp(-this._ballInterpRate * dt);
+    this.match.p1.x += (this._netTargetP1x - this.match.p1.x) * tPaddle;
+    this.match.ball.x += (this._netTargetBallX - this.match.ball.x) * tBall;
+    this.match.ball.z += (this._netTargetBallZ - this.match.ball.z) * tBall;
   }
 
   _render(dt = 0.016) {
