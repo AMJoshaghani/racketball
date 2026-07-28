@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { buildScene, buildRenderer, buildCamera, fitCameraFov, ARENA } from './scene.js';
-import { Paddle, Ball, BALL_RADIUS } from './entities.js';
+import { Paddle, Ball, BALL_RADIUS, PADDLE_SIZE } from './entities.js';
 import { Match, decodeSide, stepPaddlePhysics } from './game.js';
 import { Keyboard, CONTROLS, readAxis } from './input.js';
 import { AIController } from './ai.js';
@@ -56,6 +56,7 @@ class App {
     this._paddleInterpRate = 14; // opponent paddle - moves up to 620 units/sec
     this._netTargetBallVx = 0;   // ball extrapolation velocity (from host snapshots)
     this._netTargetBallVz = 0;
+    this._catchPredictCooldown = 0; // prevents re-prediction after a wrong catch guess
 
     // Guest-only: client-side prediction for the guest's OWN paddle.
     // Without this, every keypress has to travel guest -> host -> guest
@@ -204,6 +205,7 @@ class App {
     this._netTargetBallZ = 0;
     this._netTargetBallVx = 0;
     this._netTargetBallVz = 0;
+    this._catchPredictCooldown = 0;
     this._lastSentSnapshot = null;
     this._lastSentDir = 0;
     this.ui.clearPanel();
@@ -399,7 +401,10 @@ class App {
    * in sync with the snapshot rate and reads as visible stutter. */
   _handleRemoteState(prev, cur) {
     // Snapshot indices: [p1x, p2x, ballx, ballz, ballvx, ballvz, carriedByCode, scoreP1, scoreP2, overFlag, winnerCode]
-    this.match.ball.carriedBy = decodeSide(cur[6]);
+    const b = this.match.ball;
+    const wasCarriedBefore = b.carriedBy;
+
+    b.carriedBy = decodeSide(cur[6]);
     this.match.score = { p1: cur[7], p2: cur[8] };
     this.match.over = !!cur[9];
     this.match.winner = decodeSide(cur[10]);
@@ -415,31 +420,43 @@ class App {
       const prevCarried = prev[6];
       const curCarried = cur[6];
 
-      // --- Ball position correction on snapshot arrival ---
-      // Pure dead reckoning runs between snapshots with no per-frame
-      // correction (see _stepInterpolation). We only snap position here
-      // when a game event creates a discontinuity that dead reckoning
-      // can't handle, or when accumulated drift exceeds a threshold.
-      const b = this.match.ball;
-      if (prevCarried !== curCarried) {
-        // State transition (shoot or catch): snap so dead reckoning
-        // or easing starts from the authoritative position.
+      // --- Position correction (only on large discontinuities) ---
+      // Dead reckoning + client-side catch prediction handles most
+      // transitions smoothly. Only snap on goals where the ball
+      // teleports to a serve position — easing that distance would
+      // look like the ball flying backward across the whole arena.
+      if (cur[7] !== prev[7] || cur[8] !== prev[8]) {
         b.x = cur[2];
         b.z = cur[3];
-      } else if (!curCarried) {
-        // Still flying: snap only on large discrepancy (missed wall
-        // bounce or other event). Small drift from rounding is
-        // imperceptible and gets resolved at the next transition.
-        const dx = Math.abs(cur[2] - b.x);
-        const dz = Math.abs(cur[3] - b.z);
-        if (dx + dz > 80) {
-          b.x = cur[2];
-          b.z = cur[3];
-        }
+      } else if (!prevCarried && curCarried && wasCarriedBefore !== decodeSide(cur[6])) {
+        // Unpredicted catch: small snap to correct any drift.
+        // Ball is near the paddle (<~80 units) so this is subtle.
+        b.x = cur[2];
+        b.z = cur[3];
+      }
+      // Predicted catches: ball is already at the right spot, no snap.
+      // Wrong predictions: dead reckoning resumes naturally.
+
+      // --- Reconciliation for wrong catch predictions ---
+      if (!curCarried && wasCarriedBefore) {
+        // We predicted a catch but host says ball is still flying.
+        // Dead reckoning resumes from the current position with the
+        // host's velocity; cooldown prevents immediate re-prediction.
+        this._catchPredictCooldown = 0.08;
       }
 
-      if (prevCarried && !curCarried) SFX.shoot();
-      if (!prevCarried && curCarried) { SFX.hit(); this.shake = 0.15; }
+      // --- Event SFX (skip if already played by local prediction) ---
+      if (prevCarried && !curCarried) {
+        SFX.shoot();
+      }
+      if (!prevCarried && curCarried) {
+        const curSide = decodeSide(cur[6]);
+        if (wasCarriedBefore !== curSide) {
+          // Catch we didn't predict (or predicted wrong paddle)
+          SFX.hit();
+          this.shake = 0.15;
+        }
+      }
       if (cur[7] !== prev[7] || cur[8] !== prev[8]) {
         SFX.goal();
         this.ui.flashScreen();
@@ -456,16 +473,14 @@ class App {
 
   /** Interpolates the OPPONENT's paddle and extrapolates the ball every
    * frame. The opponent paddle uses exponential easing (moves slowly and
-   * at variable speed, so easing is fine). The ball uses pure dead
-   * reckoning: constant velocity extrapolation with wall-reflection
-   * clamping, and NO per-frame position correction. Any non-zero per-frame
-   * correction rate creates a speed oscillation that pulses in sync with
-   * the snapshot arrival rate and reads as visible stutter — the correction
-   * fights the extrapolation, alternately slowing and surging the ball.
-   * Position correction instead happens in _handleRemoteState, only on
-   * game events (shoot/catch/goal) or large drift (missed wall bounce).
-   * The guest's own paddle uses client-side prediction, not interpolated
-   * here (see the guest branch of _step). */
+   * at variable speed, so easing is fine). The ball uses dead reckoning
+   * (constant velocity) with wall-reflection clamping and client-side
+   * catch prediction — the same swept-segment catch-band check the host
+   * runs, so catches appear instantly instead of waiting up to 100ms for
+   * the next snapshot. Any per-frame position correction is intentionally
+   * omitted because it would fight the dead reckoning and create a speed
+   * oscillation that pulses in sync with the snapshot rate. The guest's
+   * own paddle uses client-side prediction, not interpolated here. */
   _stepInterpolation(dt) {
     // Opponent paddle: exponential easing (unchanged)
     const tPaddle = 1 - Math.exp(-this._paddleInterpRate * dt);
@@ -478,9 +493,8 @@ class App {
       b.x += (this._netTargetBallX - b.x) * tCarry;
       b.z += (this._netTargetBallZ - b.z) * tCarry;
     } else {
-      // Flying: pure dead reckoning — constant velocity, zero correction.
-      // This produces perfectly smooth motion at the exact speed the host
-      // simulated, with no speed oscillation between snapshot arrivals.
+      // Dead reckoning: constant-velocity extrapolation.
+      const prevZ = b.z;
       b.x += this._netTargetBallVx * dt;
       b.z += this._netTargetBallVz * dt;
 
@@ -489,7 +503,38 @@ class App {
       const wallLimit = ARENA.wallX - BALL_RADIUS;
       if (b.x > wallLimit) { b.x = wallLimit; this._netTargetBallVx = -Math.abs(this._netTargetBallVx); }
       else if (b.x < -wallLimit) { b.x = -wallLimit; this._netTargetBallVx = Math.abs(this._netTargetBallVx); }
+
+      // Client-side catch prediction: detect when the dead-reckoned ball
+      // crosses a paddle's catch band and transition to carried immediately,
+      // instead of waiting up to 100ms for the host snapshot. This uses
+      // the exact same swept-segment check the host runs in Match.step(),
+      // so the predicted catch frame matches the host's almost exactly.
+      // A cooldown prevents re-prediction after a wrong guess.
+      if (this._catchPredictCooldown <= 0 && this._netTargetBallVz !== 0) {
+        const approachingId = this._netTargetBallVz < 0 ? 'p2' : 'p1';
+        const paddleX = approachingId === 'p1'
+          ? this.match.p1.x
+          : this._predictedSelf.x;
+        const paddleZ = approachingId === 'p1' ? ARENA.baselineZ : -ARENA.baselineZ;
+        const bandHalf = PADDLE_SIZE.d / 2 + BALL_RADIUS;
+        const bandMin = paddleZ - bandHalf;
+        const bandMax = paddleZ + bandHalf;
+        const segMin = Math.min(prevZ, b.z);
+        const segMax = Math.max(prevZ, b.z);
+        const crossesBand = segMax >= bandMin && segMin <= bandMax;
+        const withinX = Math.abs(b.x - paddleX) <= PADDLE_SIZE.w / 2 + BALL_RADIUS * 0.15;
+
+        if (crossesBand && withinX) {
+          b.carriedBy = approachingId;
+          this._netTargetBallVx = 0;
+          this._netTargetBallVz = 0;
+          SFX.hit();
+          this.shake = 0.15;
+        }
+      }
     }
+
+    this._catchPredictCooldown = Math.max(0, this._catchPredictCooldown - dt);
   }
 
   _render(dt = 0.016) {
