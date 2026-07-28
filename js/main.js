@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { buildScene, buildRenderer, buildCamera, fitCameraFov, ARENA } from './scene.js';
-import { Paddle, Ball } from './entities.js';
+import { Paddle, Ball, BALL_RADIUS } from './entities.js';
 import { Match, decodeSide, stepPaddlePhysics } from './game.js';
 import { Keyboard, CONTROLS, readAxis } from './input.js';
 import { AIController } from './ai.js';
@@ -54,7 +54,8 @@ class App {
     this._netTargetBallX = 0;
     this._netTargetBallZ = 0;
     this._paddleInterpRate = 14; // opponent paddle - moves up to 620 units/sec
-    this._ballInterpRate = 24;   // ball - moves up to 1600 units/sec, needs to catch up faster
+    this._netTargetBallVx = 0;   // ball extrapolation velocity (from host snapshots)
+    this._netTargetBallVz = 0;
 
     // Guest-only: client-side prediction for the guest's OWN paddle.
     // Without this, every keypress has to travel guest -> host -> guest
@@ -199,6 +200,8 @@ class App {
     this._netTargetP2x = 0;
     this._netTargetBallX = 0;
     this._netTargetBallZ = 0;
+    this._netTargetBallVx = 0;
+    this._netTargetBallVz = 0;
     this.ui.clearPanel();
     this.ui.showHUD();
     this.ui.updateScore(0, 0);
@@ -373,47 +376,72 @@ class App {
    * packet. Continuous fields are stored as interpolation targets; see
    * _stepInterpolation for how those get eased toward each frame. */
   _handleRemoteState(prev, cur) {
-    // Snapshot indices: [p1x, p2x, ballx, ballz, carriedByCode, scoreP1, scoreP2, overFlag, winnerCode]
-    this.match.ball.carriedBy = decodeSide(cur[4]);
-    this.match.score = { p1: cur[5], p2: cur[6] };
-    this.match.over = !!cur[7];
-    this.match.winner = decodeSide(cur[8]);
+    // Snapshot indices: [p1x, p2x, ballx, ballz, ballvx, ballvz, carriedByCode, scoreP1, scoreP2, overFlag, winnerCode]
+    this.match.ball.carriedBy = decodeSide(cur[6]);
+    this.match.score = { p1: cur[7], p2: cur[8] };
+    this.match.over = !!cur[9];
+    this.match.winner = decodeSide(cur[10]);
 
     this._netTargetP1x = cur[0];
     this._netTargetP2x = cur[1];
     this._netTargetBallX = cur[2];
     this._netTargetBallZ = cur[3];
+    this._netTargetBallVx = cur[4];
+    this._netTargetBallVz = cur[5];
 
     if (prev) {
-      const prevCarried = prev[4];
-      const curCarried = cur[4];
+      const prevCarried = prev[6];
+      const curCarried = cur[6];
       if (prevCarried && !curCarried) SFX.shoot();
       if (!prevCarried && curCarried) { SFX.hit(); this.shake = 0.15; }
-      if (cur[5] !== prev[5] || cur[6] !== prev[6]) {
+      if (cur[7] !== prev[7] || cur[8] !== prev[8]) {
         SFX.goal();
         this.ui.flashScreen();
         this.shake = 0.3;
-        const p1Scored = cur[5] > prev[5];
+        const p1Scored = cur[7] > prev[7];
         const scorerIsMe = this.mirror ? !p1Scored : p1Scored;
         this.ui.flashGoal(scorerIsMe ? 'YOU SCORE!' : 'OPPONENT SCORES');
       }
-      if (cur[7] && !prev[7]) this._endMatch();
+      if (cur[9] && !prev[9]) this._endMatch();
     }
     const { me, opp } = this._selfOppScore();
     this.ui.updateScore(me, opp);
   }
 
-  /** Eases the OPPONENT's paddle and the ball toward the latest network
-   * targets every frame, so motion looks smooth between state updates
-   * instead of visibly snapping on each arrival. The guest's own paddle
-   * is handled separately via client-side prediction (see the guest
-   * branch of _step), not interpolated here. */
+  /** Interpolates the OPPONENT's paddle and the ball toward the latest
+   * network targets every frame. The opponent paddle uses exponential
+   * easing (slow-moving, variable speed). The ball uses dead reckoning:
+   * it extrapolates using the velocity received from the host for smooth
+   * continuous motion between 15 Hz snapshots, with wall-reflection
+   * clamping to prevent overshoot and gentle correction toward the
+   * authoritative host position. The guest's own paddle is handled
+   * separately via client-side prediction (see the guest branch of
+   * _step), not interpolated here. */
   _stepInterpolation(dt) {
     const tPaddle = 1 - Math.exp(-this._paddleInterpRate * dt);
-    const tBall = 1 - Math.exp(-this._ballInterpRate * dt);
     this.match.p1.x += (this._netTargetP1x - this.match.p1.x) * tPaddle;
-    this.match.ball.x += (this._netTargetBallX - this.match.ball.x) * tBall;
-    this.match.ball.z += (this._netTargetBallZ - this.match.ball.z) * tBall;
+
+    const b = this.match.ball;
+    if (b.carriedBy) {
+      // Ball held by a paddle: ease toward target position
+      const tCarry = 1 - Math.exp(-30 * dt);
+      b.x += (this._netTargetBallX - b.x) * tCarry;
+      b.z += (this._netTargetBallZ - b.z) * tCarry;
+    } else {
+      // Ball in flight: dead reckoning via received velocity
+      b.x += this._netTargetBallVx * dt;
+      b.z += this._netTargetBallVz * dt;
+
+      // Reflect off arena side walls to avoid overshoot
+      const wallLimit = ARENA.wallX - BALL_RADIUS;
+      if (b.x > wallLimit) { b.x = wallLimit; this._netTargetBallVx = -Math.abs(this._netTargetBallVx); }
+      else if (b.x < -wallLimit) { b.x = -wallLimit; this._netTargetBallVx = Math.abs(this._netTargetBallVx); }
+
+      // Gentle correction toward the authoritative host position
+      const tc = 1 - Math.exp(-18 * dt);
+      b.x += (this._netTargetBallX - b.x) * tc;
+      b.z += (this._netTargetBallZ - b.z) * tc;
+    }
   }
 
   _render(dt = 0.016) {

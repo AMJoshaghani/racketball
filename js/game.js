@@ -139,7 +139,7 @@ export class Match {
    * instead of a nested object so repeated key names don't get sent on
    * every message - this runs many times a second, so payload size adds
    * up fast over a metered TURN relay.
-   * [p1x, p2x, ballx, ballz, carriedByCode, scoreP1, scoreP2, overFlag, winnerCode]
+   * [p1x, p2x, ballx, ballz, ballvx, ballvz, carriedByCode, scoreP1, scoreP2, overFlag, winnerCode]
    */
   serialize() {
     return [
@@ -147,6 +147,8 @@ export class Match {
       Math.round(this.p2.x),
       Math.round(this.ball.x),
       Math.round(this.ball.z),
+      Math.round(this.ball.vx),
+      Math.round(this.ball.vz),
       encodeSide(this.ball.carriedBy),
       this.score.p1,
       this.score.p2,
@@ -157,9 +159,11 @@ export class Match {
 
   applySnapshot(s) {
     this.p1.x = s[0]; this.p2.x = s[1];
-    this.ball.x = s[2]; this.ball.z = s[3]; this.ball.carriedBy = decodeSide(s[4]);
-    this.score = { p1: s[5], p2: s[6] };
-    this.over = !!s[7]; this.winner = decodeSide(s[8]);
+    this.ball.x = s[2]; this.ball.z = s[3];
+    this.ball.vx = s[4]; this.ball.vz = s[5];
+    this.ball.carriedBy = decodeSide(s[6]);
+    this.score = { p1: s[7], p2: s[8] };
+    this.over = !!s[9]; this.winner = decodeSide(s[10]);
   }
 }
 
