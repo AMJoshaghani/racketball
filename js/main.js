@@ -391,8 +391,12 @@ class App {
   /** Called exactly once per incoming network state packet (not once per
    * render frame) - applies discrete fields immediately and fires
    * one-shot events (goal, hit, shoot) by comparing to the previous
-   * packet. Continuous fields are stored as interpolation targets; see
-   * _stepInterpolation for how those get eased toward each frame. */
+   * packet. Ball position is snapped on game state transitions (shoot,
+   * catch, goal) and on large flight discontinuities (missed wall bounce).
+   * Between snapshots the ball moves via pure dead reckoning (constant
+   * velocity in _stepInterpolation) with NO per-frame correction — any
+   * non-zero correction rate would create a speed oscillation that pulses
+   * in sync with the snapshot rate and reads as visible stutter. */
   _handleRemoteState(prev, cur) {
     // Snapshot indices: [p1x, p2x, ballx, ballz, ballvx, ballvz, carriedByCode, scoreP1, scoreP2, overFlag, winnerCode]
     this.match.ball.carriedBy = decodeSide(cur[6]);
@@ -410,6 +414,30 @@ class App {
     if (prev) {
       const prevCarried = prev[6];
       const curCarried = cur[6];
+
+      // --- Ball position correction on snapshot arrival ---
+      // Pure dead reckoning runs between snapshots with no per-frame
+      // correction (see _stepInterpolation). We only snap position here
+      // when a game event creates a discontinuity that dead reckoning
+      // can't handle, or when accumulated drift exceeds a threshold.
+      const b = this.match.ball;
+      if (prevCarried !== curCarried) {
+        // State transition (shoot or catch): snap so dead reckoning
+        // or easing starts from the authoritative position.
+        b.x = cur[2];
+        b.z = cur[3];
+      } else if (!curCarried) {
+        // Still flying: snap only on large discrepancy (missed wall
+        // bounce or other event). Small drift from rounding is
+        // imperceptible and gets resolved at the next transition.
+        const dx = Math.abs(cur[2] - b.x);
+        const dz = Math.abs(cur[3] - b.z);
+        if (dx + dz > 80) {
+          b.x = cur[2];
+          b.z = cur[3];
+        }
+      }
+
       if (prevCarried && !curCarried) SFX.shoot();
       if (!prevCarried && curCarried) { SFX.hit(); this.shake = 0.15; }
       if (cur[7] !== prev[7] || cur[8] !== prev[8]) {
@@ -426,39 +454,41 @@ class App {
     this.ui.updateScore(me, opp);
   }
 
-  /** Interpolates the OPPONENT's paddle and the ball toward the latest
-   * network targets every frame. The opponent paddle uses exponential
-   * easing (slow-moving, variable speed). The ball uses dead reckoning:
-   * it extrapolates using the velocity received from the host for smooth
-   * continuous motion between 15 Hz snapshots, with wall-reflection
-   * clamping to prevent overshoot and gentle correction toward the
-   * authoritative host position. The guest's own paddle is handled
-   * separately via client-side prediction (see the guest branch of
-   * _step), not interpolated here. */
+  /** Interpolates the OPPONENT's paddle and extrapolates the ball every
+   * frame. The opponent paddle uses exponential easing (moves slowly and
+   * at variable speed, so easing is fine). The ball uses pure dead
+   * reckoning: constant velocity extrapolation with wall-reflection
+   * clamping, and NO per-frame position correction. Any non-zero per-frame
+   * correction rate creates a speed oscillation that pulses in sync with
+   * the snapshot arrival rate and reads as visible stutter — the correction
+   * fights the extrapolation, alternately slowing and surging the ball.
+   * Position correction instead happens in _handleRemoteState, only on
+   * game events (shoot/catch/goal) or large drift (missed wall bounce).
+   * The guest's own paddle uses client-side prediction, not interpolated
+   * here (see the guest branch of _step). */
   _stepInterpolation(dt) {
+    // Opponent paddle: exponential easing (unchanged)
     const tPaddle = 1 - Math.exp(-this._paddleInterpRate * dt);
     this.match.p1.x += (this._netTargetP1x - this.match.p1.x) * tPaddle;
 
     const b = this.match.ball;
     if (b.carriedBy) {
-      // Ball held by a paddle: ease toward target position
+      // Carried: fast easing toward the paddle position
       const tCarry = 1 - Math.exp(-30 * dt);
       b.x += (this._netTargetBallX - b.x) * tCarry;
       b.z += (this._netTargetBallZ - b.z) * tCarry;
     } else {
-      // Ball in flight: dead reckoning via received velocity
+      // Flying: pure dead reckoning — constant velocity, zero correction.
+      // This produces perfectly smooth motion at the exact speed the host
+      // simulated, with no speed oscillation between snapshot arrivals.
       b.x += this._netTargetBallVx * dt;
       b.z += this._netTargetBallVz * dt;
 
-      // Reflect off arena side walls to avoid overshoot
+      // Reflect off side walls so the ball doesn't overshoot into the
+      // wall while waiting for the next snapshot to confirm the bounce.
       const wallLimit = ARENA.wallX - BALL_RADIUS;
       if (b.x > wallLimit) { b.x = wallLimit; this._netTargetBallVx = -Math.abs(this._netTargetBallVx); }
       else if (b.x < -wallLimit) { b.x = -wallLimit; this._netTargetBallVx = Math.abs(this._netTargetBallVx); }
-
-      // Gentle correction toward the authoritative host position
-      const tc = 1 - Math.exp(-18 * dt);
-      b.x += (this._netTargetBallX - b.x) * tc;
-      b.z += (this._netTargetBallZ - b.z) * tc;
     }
   }
 
