@@ -82,8 +82,10 @@ class App {
     this._stateSendAccum = 0;
     this._inputSendAccum = 0;
     this._pendingShoot = false;
-    this.STATE_SEND_INTERVAL = 1 / 15; // host -> guest state, 15Hz
-    this.INPUT_SEND_INTERVAL = 1 / 20; // guest -> host input, 20Hz
+    this.STATE_SEND_INTERVAL = 1 / 10; // host -> guest state, 10Hz (dead reckoning keeps ball smooth between updates)
+    this.INPUT_SEND_INTERVAL = 1 / 15; // guest -> host input, 15Hz (client-side prediction masks latency)
+    this._lastSentSnapshot = null;     // cached serialized state for dirty-check
+    this._lastSentDir = 0;             // last direction sent to host, for guest input dirty-check
 
     this._loop = this._loop.bind(this);
     this._showMainMenu();
@@ -202,6 +204,8 @@ class App {
     this._netTargetBallZ = 0;
     this._netTargetBallVx = 0;
     this._netTargetBallVz = 0;
+    this._lastSentSnapshot = null;
+    this._lastSentDir = 0;
     this.ui.clearPanel();
     this.ui.showHUD();
     this.ui.updateScore(0, 0);
@@ -300,7 +304,14 @@ class App {
       this._stateSendAccum += dt;
       if (this.net && this._stateSendAccum >= this.STATE_SEND_INTERVAL) {
         this._stateSendAccum = 0;
-        this.net.send({ t: 'state', s: this.match.serialize() });
+        const snap = this.match.serialize();
+        // Dirty-check: skip sending if nothing changed since the last
+        // state packet. During idle moments (ball held, paddles still,
+        // countdown) this eliminates up to 100% of relay traffic.
+        if (!this._lastSentSnapshot || !arraysEqual(this._lastSentSnapshot, snap)) {
+          this._lastSentSnapshot = snap;
+          this.net.send({ t: 'state', s: snap });
+        }
       }
     } else if (this.mode === 'guest') {
       // Direction is read every frame (not just on throttled send frames)
@@ -317,7 +328,14 @@ class App {
       this._inputSendAccum += dt;
       if (this.net && this._inputSendAccum >= this.INPUT_SEND_INTERVAL) {
         this._inputSendAccum = 0;
-        this.net.send({ t: 'input', dir, shoot: this._pendingShoot });
+        // Dirty-check: skip sending if input hasn't changed and there's no
+        // pending shoot. During idle holding this cuts guest->host traffic
+        // to near zero while the host keeps applying dir=0, shoot=false.
+        const inputChanged = dir !== this._lastSentDir || this._pendingShoot;
+        if (inputChanged) {
+          this._lastSentDir = dir;
+          this.net.send({ t: 'input', dir, shoot: this._pendingShoot });
+        }
         this._pendingShoot = false;
       }
 
@@ -483,6 +501,12 @@ class App {
     this._step(dt);
     if (this.match) this._render(dt);
   }
+}
+
+function arraysEqual(a, b) {
+  if (!a || !b || a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) { if (a[i] !== b[i]) return false; }
+  return true;
 }
 
 new App();
